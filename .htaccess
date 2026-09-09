@@ -1,0 +1,25 @@
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Disable directory browsing
+    Options -Indexes
+
+    # Protect configuration, sql & environment files
+    <FilesMatch "^\.|\.(config|env|sql|log|ini|sh|conf)$">
+        Order allow,deny
+        Deny from all
+    </FilesMatch>
+
+    # Route clean module URLs that match folder names before static passthrough
+    RewriteRule ^assets/?$ index.php [QSA,L]
+    RewriteRule ^assets/create/?$ index.php [QSA,L]
+    RewriteRule ^assets/view/(.*)$ index.php [QSA,L]
+
+    # Direct File or Directory Passthrough (Static files: CSS, JS, Images, Uploads)
+    RewriteCond %{REQUEST_FILENAME} -f
+    RewriteRule ^ - [L]
+
+    # Handle All Clean URLs Through Front Router (index.php)
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteRule ^ index.php [QSA,L]
+</IfModule>
