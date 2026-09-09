@@ -226,9 +226,12 @@ include __DIR__ . '/../../includes/header.php';
                     <?php endforeach; ?>
                 </select>
                 <?php if (empty($bulkStockRows)): ?>
-                <small style="color: var(--danger); font-size: 0.8rem; display: block; margin-top: 0.35rem;">
-                    No bulk inventory stock available. Go to <a href="<?= BASE_URL ?>/inventory" style="color: var(--primary);">Bulk Inventory Intake</a> to receive stock.
-                </small>
+                <div style="margin-top: 0.5rem; background: #fffbeb; border: 1px solid #fef3c7; padding: 0.65rem 0.85rem; border-radius: 6px; display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;">
+                    <span style="color: #92400e; font-size: 0.8rem;">No bulk inventory stock currently available in any room.</span>
+                    <a href="<?= BASE_URL ?>/inventory?open=receive" class="btn btn-sm btn-primary" style="font-size: 0.775rem; white-space: nowrap;">
+                        <i data-lucide="package-plus"></i> Receive Stock
+                    </a>
+                </div>
                 <?php endif; ?>
             </div>
 

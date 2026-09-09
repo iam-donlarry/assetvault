@@ -790,6 +790,18 @@ document.addEventListener('DOMContentLoaded', function() {
     openEditProductDrawer(<?= json_encode($editProductTarget, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>);
 });
 <?php endif; ?>
+
+<?php if (isset($_GET['open']) && $_GET['open'] === 'add'): ?>
+document.addEventListener('DOMContentLoaded', function() {
+    openProductDrawer();
+    <?php if (isset($_GET['tracking']) && $_GET['tracking'] === 'bulk_quantity'): ?>
+    const bulkRadio = document.querySelector('input[name="tracking_type"][value="bulk_quantity"]');
+    if (bulkRadio) {
+        bulkRadio.checked = true;
+    }
+    <?php endif; ?>
+});
+<?php endif; ?>
 </script>
 
 <?php

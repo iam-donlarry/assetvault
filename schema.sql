@@ -180,28 +180,32 @@ CREATE TABLE `users` (
 DROP TABLE IF EXISTS `product_models`;
 CREATE TABLE `product_models` (
     `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    `product_code` VARCHAR(50) NOT NULL UNIQUE,
+    `product_code` VARCHAR(50) NOT NULL,
     `category_id` INT UNSIGNED NOT NULL,
-    `brand` VARCHAR(80) NOT NULL,
-    `model_name` VARCHAR(120) NOT NULL,
-    `model_number` VARCHAR(80) NULL,
+    `brand` VARCHAR(80) NULL,
+    `model_name` VARCHAR(150) NOT NULL,
+    `model_number` VARCHAR(100) NULL,
     `tracking_type` ENUM('serialized', 'bulk_quantity') NOT NULL DEFAULT 'serialized',
     `unit_of_measure` VARCHAR(20) NOT NULL DEFAULT 'units',
-    `specifications` TEXT NULL,
-    `min_reorder_level` INT UNSIGNED NOT NULL DEFAULT 0,
     `default_purchase_cost` DECIMAL(12,2) NULL,
     `average_unit_cost` DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+    `default_currency` VARCHAR(3) NOT NULL DEFAULT 'NGN',
+    `default_warranty_months` INT UNSIGNED NULL DEFAULT 12,
+    `min_stock_alert` INT UNSIGNED NOT NULL DEFAULT 5,
+    `min_reorder_level` INT UNSIGNED NOT NULL DEFAULT 5,
+    `description` TEXT NULL,
+    `specifications` TEXT NULL,
     `is_active` TINYINT(1) NOT NULL DEFAULT 1,
     `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     
+    UNIQUE KEY `uk_prod_code` (`product_code`),
     UNIQUE KEY `uk_canonical_product` (`category_id`, `brand`, `model_name`, `model_number`),
-    INDEX `idx_prod_category` (`category_id`),
-    INDEX `idx_prod_brand` (`brand`),
-    INDEX `idx_prod_tracking` (`tracking_type`),
-    INDEX `idx_prod_active` (`is_active`),
+    INDEX `idx_pm_category` (`category_id`),
+    INDEX `idx_pm_tracking` (`tracking_type`),
+    INDEX `idx_pm_lookup` (`brand`, `model_name`),
     
-    CONSTRAINT `fk_prod_category` FOREIGN KEY (`category_id`) REFERENCES `asset_categories` (`id`) ON UPDATE CASCADE ON DELETE RESTRICT
+    CONSTRAINT `fk_pm_category` FOREIGN KEY (`category_id`) REFERENCES `asset_categories` (`id`) ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------
@@ -276,14 +280,13 @@ CREATE TABLE `inventory_stock` (
     `quantity_assigned` INT UNSIGNED NOT NULL DEFAULT 0,
     `quantity_damaged` INT UNSIGNED NOT NULL DEFAULT 0,
     `quantity_under_repair` INT UNSIGNED NOT NULL DEFAULT 0,
-    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     
-    UNIQUE KEY `uk_prod_location` (`product_id`, `location_id`),
+    UNIQUE KEY `uk_stock_prod_loc` (`product_id`, `location_id`),
     INDEX `idx_stock_product` (`product_id`),
     INDEX `idx_stock_location` (`location_id`),
     
-    CONSTRAINT `fk_stock_product` FOREIGN KEY (`product_id`) REFERENCES `product_models` (`id`) ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT `fk_stock_product` FOREIGN KEY (`product_id`) REFERENCES `product_models` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT `fk_stock_location` FOREIGN KEY (`location_id`) REFERENCES `locations` (`id`) ON UPDATE CASCADE ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -296,26 +299,29 @@ CREATE TABLE `inventory_transactions` (
     `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     `transaction_code` VARCHAR(50) NOT NULL UNIQUE,
     `product_id` INT UNSIGNED NOT NULL,
-    `transaction_type` ENUM('purchase_receive', 'staff_checkout', 'staff_return', 'location_transfer', 'damage_write_down', 'repair_out', 'repair_in', 'cycle_count_adjustment', 'disposal') NOT NULL,
     `from_location_id` INT UNSIGNED NULL,
     `to_location_id` INT UNSIGNED NULL,
-    `quantity` INT NOT NULL COMMENT 'Signed: positive for receipt/in, negative for issuance/out',
+    `transaction_type` ENUM(
+        'intake', 'checkout', 'return', 'transfer', 'adjustment', 'damage', 'loss', 'disposal',
+        'purchase_receive', 'staff_checkout', 'staff_return', 'cycle_count_adjustment', 'damage_write_off', 'location_transfer'
+    ) NOT NULL,
+    `quantity` INT NOT NULL COMMENT 'Absolute or signed quantity affected',
     `unit_cost` DECIMAL(12,2) NULL COMMENT 'Unit purchase or valuation cost at transaction time',
+    `currency` VARCHAR(3) NOT NULL DEFAULT 'NGN',
     `reference_type` VARCHAR(50) NULL COMMENT 'e.g. asset_assignment, po, adjustment',
     `reference_id` INT UNSIGNED NULL,
+    `created_by_user_id` INT UNSIGNED NULL,
+    `performed_by_user_id` INT UNSIGNED NULL,
     `notes` TEXT NULL,
-    `created_by_user_id` INT UNSIGNED NOT NULL,
     `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     
-    INDEX `idx_itrans_prod` (`product_id`),
-    INDEX `idx_itrans_type` (`transaction_type`),
-    INDEX `idx_itrans_created` (`created_at`),
-    INDEX `idx_itrans_ref` (`reference_type`, `reference_id`),
+    INDEX `idx_it_product` (`product_id`),
+    INDEX `idx_it_type` (`transaction_type`),
+    INDEX `idx_it_created` (`created_at`),
+    INDEX `fk_it_user` (`performed_by_user_id`),
     
-    CONSTRAINT `fk_itrans_product` FOREIGN KEY (`product_id`) REFERENCES `product_models` (`id`) ON UPDATE CASCADE ON DELETE RESTRICT,
-    CONSTRAINT `fk_itrans_from_loc` FOREIGN KEY (`from_location_id`) REFERENCES `locations` (`id`) ON UPDATE CASCADE ON DELETE SET NULL,
-    CONSTRAINT `fk_itrans_to_loc` FOREIGN KEY (`to_location_id`) REFERENCES `locations` (`id`) ON UPDATE CASCADE ON DELETE SET NULL,
-    CONSTRAINT `fk_itrans_user` FOREIGN KEY (`created_by_user_id`) REFERENCES `users` (`id`) ON UPDATE CASCADE ON DELETE RESTRICT
+    CONSTRAINT `fk_it_product` FOREIGN KEY (`product_id`) REFERENCES `product_models` (`id`) ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT `fk_it_user` FOREIGN KEY (`performed_by_user_id`) REFERENCES `users` (`id`) ON UPDATE CASCADE ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------
@@ -666,4 +672,4 @@ SELECT 4, `id` FROM `permissions` WHERE `slug` IN ('assets.view');
 -- Initial Super Admin User (Default Password: Admin@123456)
 -- Hash generated via password_hash('Admin@123456', PASSWORD_BCRYPT)
 INSERT INTO `users` (`username`, `email`, `password_hash`, `full_name`, `role_id`, `is_active`) VALUES
-('admin', 'admin@bayebusinesssolutions.com', 'y$gQHb1MjxlcmVr4HxhKqYc.HXw34srd7rWaHL15Gdwkc5x8SqfURr2', 'System Administrator', 1, 1);
+('admin', 'admin@bayebusinesssolutions.com', '$2y$10$gQHb1MjxlcmVr4HxhKqYc.HXw34srd7rWaHL15Gdwkc5x8SqfURr2', 'System Administrator', 1, 1);

@@ -42,16 +42,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $locationId = (int)($_POST['location_id'] ?? 0);
         $quantity = (int)($_POST['quantity'] ?? 0);
         $unitCost = $_POST['unit_cost'] !== '' ? (float)$_POST['unit_cost'] : null;
-        $notes = trim($_POST['notes'] ?? '');
+        $receivedDate = !empty($_POST['received_date']) ? trim($_POST['received_date']) : date('Y-m-d');
+        $supplier = trim($_POST['supplier_name'] ?? '');
+        $referenceNo = trim($_POST['reference_no'] ?? '');
+        $batchNumber = trim($_POST['batch_number'] ?? '');
+        $userNotes = trim($_POST['notes'] ?? '');
+
+        $metaParts = [];
+        if (!empty($referenceNo)) $metaParts[] = "PO/Ref: {$referenceNo}";
+        if (!empty($supplier)) $metaParts[] = "Supplier: {$supplier}";
+        if (!empty($batchNumber)) $metaParts[] = "Batch: {$batchNumber}";
+        if ($receivedDate !== date('Y-m-d')) $metaParts[] = "Received: {$receivedDate}";
+
+        $compositeNotes = !empty($metaParts) ? implode(' | ', $metaParts) : '';
+        if (!empty($userNotes)) {
+            $compositeNotes = $compositeNotes ? "{$compositeNotes}\n{$userNotes}" : $userNotes;
+        }
 
         try {
-            $txId = $invManager->receiveStock($productId, $locationId, $quantity, $unitCost, $currentUserId, $notes);
+            $txId = $invManager->receiveStock($productId, $locationId, $quantity, $unitCost, $currentUserId, $compositeNotes);
             logAudit('inventory.receive', 'inventory_stock', $productId, null, [
-                'location_id' => $locationId,
-                'quantity' => $quantity,
-                'unit_cost' => $unitCost
+                'location_id'   => $locationId,
+                'quantity'      => $quantity,
+                'unit_cost'     => $unitCost,
+                'reference_no'  => $referenceNo,
+                'supplier'      => $supplier,
+                'received_date' => $receivedDate
             ]);
-            flashMessage('success', "Stock receipt of {$quantity} units recorded successfully.");
+            flashMessage('success', "Stock receipt of {$quantity} units recorded successfully into ledger.");
             redirect('inventory');
         } catch (Exception $e) {
             flashMessage('error', 'Stock intake error: ' . $e->getMessage());
@@ -126,10 +144,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $categories = $pdo->query("SELECT id, name, code FROM asset_categories ORDER BY name ASC")->fetchAll();
 $locations = $pdo->query("SELECT id, name, code, building, floor FROM locations ORDER BY name ASC")->fetchAll();
 $bulkProductsList = $pdo->query("
-    SELECT id, product_code, brand, model_name, model_number, unit_of_measure, average_unit_cost, min_reorder_level
-    FROM product_models 
-    WHERE tracking_type = 'bulk_quantity' AND is_active = 1
-    ORDER BY brand ASC, model_name ASC
+    SELECT p.id, p.product_code, p.brand, p.model_name, p.model_number, p.unit_of_measure, p.average_unit_cost, p.min_reorder_level,
+           COALESCE(SUM(s.quantity_available), 0) AS total_available_now
+    FROM product_models p
+    LEFT JOIN inventory_stock s ON p.id = s.product_id
+    WHERE p.tracking_type = 'bulk_quantity' AND p.is_active = 1
+    GROUP BY p.id
+    ORDER BY p.brand ASC, p.model_name ASC
 ")->fetchAll();
 
 // Filters
@@ -559,24 +580,74 @@ include __DIR__ . '/../../includes/header.php';
 
             <div class="offcanvas-body">
                 <div style="margin-bottom: 1.5rem;">
+                    <?php if (empty($bulkProductsList)): ?>
+                    <div style="background: #fffbeb; border: 1px solid #fef3c7; color: #92400e; padding: 0.85rem 1rem; border-radius: var(--radius-sm); margin-bottom: 1.25rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem;">
+                        <div style="font-size: 0.85rem;">
+                            <strong>No Bulk Products in Catalog:</strong> All existing products are configured as Serialized. Create a product with <em>Tracking Type: Bulk Quantity</em> first.
+                        </div>
+                        <a href="<?= BASE_URL ?>/catalog?open=add&tracking=bulk_quantity" target="_blank" class="btn btn-sm btn-primary" style="white-space: nowrap;">
+                            <i data-lucide="plus"></i> Add Bulk Product
+                        </a>
+                    </div>
+                    <?php endif; ?>
+
+                    <!-- Product Selection -->
                     <div class="form-group">
-                        <label class="form-label" for="rcv_product_id">Select Bulk Product <span style="color: var(--danger);">*</span></label>
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.35rem;">
+                            <label class="form-label" for="rcv_product_id" style="margin-bottom: 0;">Select Bulk Product <span style="color: var(--danger);">*</span></label>
+                            <a href="<?= BASE_URL ?>/catalog?open=add&tracking=bulk_quantity" target="_blank" style="font-size: 0.775rem; color: var(--primary); font-weight: 600; text-decoration: none; display: inline-flex; align-items: center; gap: 0.25rem;">
+                                <i data-lucide="external-link" style="width: 12px; height: 12px;"></i> Register New Product
+                            </a>
+                        </div>
                         <select name="product_id" id="rcv_product_id" class="form-control" required onchange="handleProductSelect(this)">
                             <option value="">Choose Catalog Product...</option>
                             <?php foreach ($bulkProductsList as $bp): ?>
-                            <option value="<?= $bp['id'] ?>" data-cost="<?= $bp['average_unit_cost'] ?>" data-uom="<?= e($bp['unit_of_measure']) ?>">
-                                <?= e($bp['brand']) ?> <?= e($bp['model_name']) ?> (<?= e($bp['product_code']) ?>)
+                            <option value="<?= $bp['id'] ?>" 
+                                data-cost="<?= $bp['average_unit_cost'] ?>" 
+                                data-uom="<?= e($bp['unit_of_measure']) ?>"
+                                data-stock="<?= $bp['total_available_now'] ?>"
+                                data-brand="<?= e($bp['brand']) ?>"
+                                data-model="<?= e($bp['model_name']) ?>"
+                                data-code="<?= e($bp['product_code']) ?>">
+                                <?= e($bp['brand']) ?> <?= e($bp['model_name']) ?> (<?= e($bp['product_code']) ?>) — Available: <?= $bp['total_available_now'] ?> <?= e($bp['unit_of_measure']) ?>
                             </option>
                             <?php endforeach; ?>
                         </select>
                         <small style="color: var(--text-secondary); font-size: 0.75rem;">Only products configured for bulk quantity tracking are listed.</small>
                     </div>
 
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-                        <div class="form-group">
+                    <!-- Live WAC & Stock Impact Preview Card -->
+                    <div id="wacPreviewCard" style="display: none; background: #f8fafc; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.85rem 1rem; margin-bottom: 1.25rem;">
+                        <div style="font-size: 0.775rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.4rem;">
+                            <i data-lucide="calculator" style="width: 14px; height: 14px; color: var(--primary);"></i>
+                            <span>Real-Time Valuation Impact</span>
+                        </div>
+                        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; font-size: 0.825rem;">
+                            <div>
+                                <span style="color: var(--text-secondary); display: block;">Current Stock:</span>
+                                <strong id="prev_stock_display" style="color: var(--text-primary);">0 units</strong>
+                            </div>
+                            <div>
+                                <span style="color: var(--text-secondary); display: block;">Current Avg Cost:</span>
+                                <strong id="prev_cost_display" style="color: var(--text-primary);"><?= DEFAULT_CURRENCY ?> 0.00</strong>
+                            </div>
+                            <div>
+                                <span style="color: var(--text-secondary); display: block;">Projected New WAC:</span>
+                                <strong id="projected_wac_display" style="color: var(--primary);"><?= DEFAULT_CURRENCY ?> 0.00</strong>
+                            </div>
+                        </div>
+                        <div id="total_batch_cost_row" style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px dashed var(--border); font-size: 0.8rem; color: var(--text-secondary); display: flex; justify-content: space-between;">
+                            <span>Total Batch Purchase Value:</span>
+                            <strong id="batch_total_display" style="color: var(--text-primary);"><?= DEFAULT_CURRENCY ?> 0.00</strong>
+                        </div>
+                    </div>
+
+                    <!-- Location & Quantity -->
+                    <div style="display: grid; grid-template-columns: 1.2fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                        <div class="form-group" style="margin: 0;">
                             <label class="form-label" for="rcv_location_id">Receiving Location / Store <span style="color: var(--danger);">*</span></label>
                             <select name="location_id" id="rcv_location_id" class="form-control" required>
-                                <option value="">Select Destination Location...</option>
+                                <option value="">Select Destination Room...</option>
                                 <?php foreach ($locations as $loc): ?>
                                 <option value="<?= $loc['id'] ?>" <?= $loc['code'] === 'LOC-STORE' ? 'selected' : '' ?>>
                                     <?= e($loc['name']) ?> (<?= e($loc['building']) ?> - <?= e($loc['floor']) ?>)
@@ -585,21 +656,51 @@ include __DIR__ . '/../../includes/header.php';
                             </select>
                         </div>
 
-                        <div class="form-group">
+                        <div class="form-group" style="margin: 0;">
                             <label class="form-label" for="rcv_quantity">Quantity Received <span style="color: var(--danger);">*</span></label>
-                            <input type="number" name="quantity" id="rcv_quantity" class="form-control" min="1" placeholder="e.g. 50" required>
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                <input type="number" name="quantity" id="rcv_quantity" class="form-control" min="1" placeholder="e.g. 50" required oninput="calculateWACPreview()">
+                                <span id="rcv_uom_badge" style="font-size: 0.775rem; color: var(--text-secondary); white-space: nowrap; padding: 0.4rem 0.6rem; background: #f1f5f9; border-radius: 4px;">units</span>
+                            </div>
                         </div>
                     </div>
 
-                    <div class="form-group">
-                        <label class="form-label" for="rcv_unit_cost">Intake Unit Cost (<?= DEFAULT_CURRENCY ?>)</label>
-                        <input type="number" step="0.01" name="unit_cost" id="rcv_unit_cost" class="form-control" placeholder="0.00">
-                        <small style="color: var(--text-secondary); font-size: 0.75rem;">Used to recalculate the catalog's Weighted Average Cost (WAC).</small>
+                    <!-- Cost & Date -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                        <div class="form-group" style="margin: 0;">
+                            <label class="form-label" for="rcv_unit_cost">Intake Unit Cost (<?= DEFAULT_CURRENCY ?>) <span style="color: var(--danger);">*</span></label>
+                            <input type="number" step="0.01" name="unit_cost" id="rcv_unit_cost" class="form-control" placeholder="0.00" required oninput="calculateWACPreview()">
+                            <small style="color: var(--text-secondary); font-size: 0.75rem;">Price per individual unit for this intake batch.</small>
+                        </div>
+
+                        <div class="form-group" style="margin: 0;">
+                            <label class="form-label" for="rcv_received_date">Received Date <span style="color: var(--danger);">*</span></label>
+                            <input type="date" name="received_date" id="rcv_received_date" class="form-control" value="<?= date('Y-m-d') ?>" required>
+                        </div>
                     </div>
 
-                    <div class="form-group">
-                        <label class="form-label" for="rcv_notes">Notes / Purchase Order / Supplier</label>
-                        <textarea name="notes" id="rcv_notes" class="form-control" rows="3" placeholder="e.g. PO-8821 purchased from OfficeTech Supplies. Batch #102."></textarea>
+                    <!-- Supplier & Reference -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                        <div class="form-group" style="margin: 0;">
+                            <label class="form-label" for="rcv_supplier">Supplier / Vendor</label>
+                            <input type="text" name="supplier_name" id="rcv_supplier" class="form-control" placeholder="e.g. OfficeTech Supplies Ltd">
+                        </div>
+
+                        <div class="form-group" style="margin: 0;">
+                            <label class="form-label" for="rcv_reference">PO / Invoice Number</label>
+                            <input type="text" name="reference_no" id="rcv_reference" class="form-control" placeholder="e.g. PO-2026-0412">
+                        </div>
+                    </div>
+
+                    <!-- Batch Number & Notes -->
+                    <div class="form-group" style="margin-bottom: 1rem;">
+                        <label class="form-label" for="rcv_batch">Batch / Lot Number</label>
+                        <input type="text" name="batch_number" id="rcv_batch" class="form-control" placeholder="e.g. LOT-2026-AUG-01 (Optional)">
+                    </div>
+
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label class="form-label" for="rcv_notes">Intake Notes / Quality Inspection</label>
+                        <textarea name="notes" id="rcv_notes" class="form-control" rows="2" placeholder="e.g. Delivery verified in sealed box. Passed physical QC inspection."></textarea>
                     </div>
                 </div>
             </div>
@@ -771,12 +872,70 @@ function handleDrawerBackdrop(e) {
 
 function handleProductSelect(select) {
     const opt = select.options[select.selectedIndex];
-    if (opt) {
-        const cost = opt.getAttribute('data-cost');
+    const card = document.getElementById('wacPreviewCard');
+    const uomBadge = document.getElementById('rcv_uom_badge');
+    
+    if (opt && opt.value) {
+        const cost = parseFloat(opt.getAttribute('data-cost')) || 0;
+        const uom = opt.getAttribute('data-uom') || 'units';
+        const stock = parseInt(opt.getAttribute('data-stock')) || 0;
+        
+        if (uomBadge) uomBadge.textContent = uom;
+        
         const costInput = document.getElementById('rcv_unit_cost');
-        if (costInput && cost) {
-            costInput.value = parseFloat(cost).toFixed(2);
+        if (costInput && !costInput.value) {
+            costInput.value = cost > 0 ? cost.toFixed(2) : '';
         }
+        
+        if (card) {
+            card.style.display = 'block';
+            document.getElementById('prev_stock_display').textContent = stock + ' ' + uom;
+            document.getElementById('prev_cost_display').textContent = '<?= DEFAULT_CURRENCY ?> ' + cost.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        }
+        
+        calculateWACPreview();
+    } else {
+        if (card) card.style.display = 'none';
+    }
+}
+
+function calculateWACPreview() {
+    const select = document.getElementById('rcv_product_id');
+    if (!select || !select.value) return;
+    
+    const opt = select.options[select.selectedIndex];
+    if (!opt) return;
+    
+    const currentStock = parseInt(opt.getAttribute('data-stock')) || 0;
+    const currentCost = parseFloat(opt.getAttribute('data-cost')) || 0;
+    const uom = opt.getAttribute('data-uom') || 'units';
+    
+    const qtyInput = document.getElementById('rcv_quantity');
+    const costInput = document.getElementById('rcv_unit_cost');
+    
+    const newQty = parseInt(qtyInput ? qtyInput.value : 0) || 0;
+    const newCost = parseFloat(costInput ? costInput.value : 0) || 0;
+    
+    const batchTotal = newQty * newCost;
+    const totalQty = currentStock + newQty;
+    
+    let projectedWAC = 0;
+    if (totalQty > 0) {
+        if (currentStock <= 0 || currentCost <= 0) {
+            projectedWAC = newCost;
+        } else {
+            projectedWAC = ((currentStock * currentCost) + (newQty * newCost)) / totalQty;
+        }
+    }
+    
+    const batchElem = document.getElementById('batch_total_display');
+    if (batchElem) {
+        batchElem.textContent = '<?= DEFAULT_CURRENCY ?> ' + batchTotal.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    }
+    
+    const wacElem = document.getElementById('projected_wac_display');
+    if (wacElem) {
+        wacElem.textContent = '<?= DEFAULT_CURRENCY ?> ' + projectedWAC.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
     }
 }
 
@@ -817,6 +976,12 @@ document.addEventListener('keydown', function(e) {
         closeAdjustModal();
     }
 });
+
+<?php if (isset($_GET['open']) && $_GET['open'] === 'receive'): ?>
+document.addEventListener('DOMContentLoaded', function() {
+    openReceiveStockDrawer();
+});
+<?php endif; ?>
 </script>
 
 <?php
